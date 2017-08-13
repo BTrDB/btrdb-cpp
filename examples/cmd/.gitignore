@@ -1,0 +1,3 @@
+*.o
+btrdb-cmd
+btrdb-cmd-static

@@ -9,11 +9,11 @@
 
 using btrdb::split_string;
 
-bool check_arguments(std::vector<std::string>& tokens, int expected_args) {
+bool check_arguments(std::vector<std::string>& tokens, int expected_args, bool exactly = true) {
     // Include the command
     int expected_tokens = expected_args + 1;
 
-    if (tokens.size() > expected_tokens) {
+    if (exactly && tokens.size() > expected_tokens) {
         return true;
     }
 
@@ -249,6 +249,24 @@ bool parse_bool(const std::string& s, bool* boolean) {
     }
 }
 
+bool parse_point(const std::string& s, struct btrdb::RawPoint* point) {
+    std::size_t comma_index = s.find(',');
+    if (comma_index == std::string::npos) {
+        return false;
+    }
+
+    std::string time_string(s, 0, comma_index);
+    std::string value_string(s, comma_index + 1);
+
+    bool time_valid = parse_time(s, &point->time);
+    if (!time_valid) {
+        return false;
+    }
+
+    bool value_valid = parse_number(s, &point->value);
+    return value_valid;
+}
+
 void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
     std::vector<std::string> tokens = split_string(command, ' ');
     if (tokens.size() == 0) {
@@ -369,7 +387,55 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         btrdb::Status status = b->create(btrdb::default_ctx, uuid, collection, tags, annotations);
         std::cout << status.message() << std::endl;
     } else if (opcode == "insert") {
-        std::cout << "Not yet supported" << std::endl;
+        if (check_arguments(tokens, 3, false)) {
+            std::cout << "Usage: insert UUID sync time1,value1 [time2,value2] ..."
+                      << std::endl;
+            return;
+        }
+
+        char uuid[16];
+        if (!parse_uuid(tokens[1], uuid)) {
+            std::cout << "Bad UUID" << std::endl;
+            return;
+        }
+
+        bool sync = false;
+        if (!tokens[2].empty() && !parse_bool(tokens[2], &sync)) {
+            std::cout << "Bad sync indicator" << std::endl;
+            return;
+        }
+
+        std::vector<std::string>::size_type num_points = tokens.size() - 3;
+        std::vector<struct btrdb::RawPoint>::size_type num_points_casted = (std::vector<struct btrdb::RawPoint>::size_type) num_points;
+        std::vector<struct btrdb::RawPoint> data(num_points_casted);
+        for (std::vector<struct btrdb::RawPoint>::size_type i = 0; i != num_points_casted; i++) {
+            bool parsed_successfully = parse_point(tokens[3 + i], &data[i]);
+            if (!parsed_successfully) {
+                std::cout << "Bad point #" << (i + 1) << ": " << tokens[3 + i]
+                          << std::endl;
+                return;
+            }
+        }
+
+        std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
+
+        bool exists;
+        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        if (stat.isError()) {
+            std::cout << stat.message() << std::endl;
+            return;
+        }
+        if (!exists) {
+            std::cout << "Stream does not exist" << std::endl;
+            return;
+        }
+
+        std::uint64_t version_resp = 0;
+        btrdb::Status status = s->insert(btrdb::default_ctx, &version_resp, data.begin(), data.end(), sync);
+        std::cout << status.message() << std::endl;
+        if (!status.isError()) {
+            std::cout << "Version: " << version_resp << std::endl;
+        }
     } else if (opcode == "delete") {
         if (check_arguments(tokens, 3)) {
             std::cout << "Usage: delete UUID [start] [end]" << std::endl;

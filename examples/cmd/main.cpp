@@ -4,14 +4,20 @@
 #include <sstream>
 
 #include <grpc++/grpc++.h>
+#include <grpc/impl/codegen/compression_types.h>
 
 #include <btrdb/btrdb.h>
 
 using btrdb::split_string;
 
-bool check_arguments(std::vector<std::string>& tokens, int expected_args, bool exactly = true) {
+bool check_arguments(std::vector<std::string>& tokens, int required_args, int expected_args, bool exactly = true) {
     // Include the command
+    int required_tokens = required_args + 1;
     int expected_tokens = expected_args + 1;
+
+    if (tokens.size() < required_tokens) {
+        return true;
+    }
 
     if (exactly && tokens.size() > expected_tokens) {
         return true;
@@ -258,13 +264,16 @@ bool parse_point(const std::string& s, struct btrdb::RawPoint* point) {
     std::string time_string(s, 0, comma_index);
     std::string value_string(s, comma_index + 1);
 
-    bool time_valid = parse_time(s, &point->time);
+    bool time_valid = parse_time(time_string, &point->time);
     if (!time_valid) {
         return false;
     }
 
-    bool value_valid = parse_number(s, &point->value);
+    bool value_valid = parse_number(value_string, &point->value);
     return value_valid;
+}
+
+void cmd_ctx(grpc::ClientContext* ctx) {
 }
 
 void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
@@ -276,7 +285,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
     const std::string& opcode = tokens[0];
 
     if (opcode == "collections") {
-        if (check_arguments(tokens, 1)) {
+        if (check_arguments(tokens, 0, 1)) {
             std::cout << "Usage: collections [prefix]" << std::endl;
             return;
         }
@@ -287,7 +296,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::vector<std::string> collections;
-        btrdb::Status status = b->listCollections(btrdb::default_ctx, &collections, prefix);
+        btrdb::Status status = b->listCollections(cmd_ctx, &collections, prefix);
         if (status.isError()) {
             std::cout << status.message() << std::endl;
             return;
@@ -296,7 +305,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << collections[i] << std::endl;
         }
     } else if (opcode == "streams") {
-        if (check_arguments(tokens, 4)) {
+        if (check_arguments(tokens, 0, 4)) {
             std::cout << "Usage: streams [collection] [is_prefix] [tags] "
                       << "[annotations]" << std::endl;
             return;
@@ -326,24 +335,24 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::vector<std::unique_ptr<btrdb::Stream>> results;
-        btrdb::Status stat = b->lookupStreams(btrdb::default_ctx, &results, collection, is_prefix, tags, annotations);
+        btrdb::Status stat = b->lookupStreams(cmd_ctx, &results, collection, is_prefix, tags, annotations);
         for (int i = 0; i != results.size(); i++) {
             std::unique_ptr<btrdb::Stream>& s = results[i];
             const std::string* stream_collection;
             const std::map<std::string, std::string>* stream_tags;
             const std::map<std::string, std::string>* stream_annotations;
             std::uint64_t stream_annotations_version;
-            btrdb::Status stream_status = s->collection(btrdb::default_ctx, &stream_collection);
+            btrdb::Status stream_status = s->collection(cmd_ctx, &stream_collection);
             if (stream_status.isError()) {
                 std::cout << stream_status.message() << std::endl;
                 continue;
             }
-            stream_status = s->tags(btrdb::default_ctx, &stream_tags);
+            stream_status = s->tags(cmd_ctx, &stream_tags);
             if (stream_status.isError()) {
                 std::cout << stream_status.message() << std::endl;
                 continue;
             }
-            stream_status = s->cachedAnnotations(btrdb::default_ctx, &stream_annotations, &stream_annotations_version);
+            stream_status = s->cachedAnnotations(cmd_ctx, &stream_annotations, &stream_annotations_version);
             if (stream_status.isError()) {
                 std::cout << stream_status.message() << std::endl;
                 continue;
@@ -359,7 +368,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << stat.message() << std::endl;
         }
     } else if (opcode == "create") {
-        if (check_arguments(tokens, 4)) {
+        if (check_arguments(tokens, 2, 4)) {
             std::cout << "Usage: create UUID collection [tags] [annotations]"
                       << std::endl;
             return;
@@ -384,10 +393,10 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             return;
         }
 
-        btrdb::Status status = b->create(btrdb::default_ctx, uuid, collection, tags, annotations);
+        btrdb::Status status = b->create(cmd_ctx, uuid, collection, tags, annotations);
         std::cout << status.message() << std::endl;
     } else if (opcode == "insert") {
-        if (check_arguments(tokens, 3, false)) {
+        if (check_arguments(tokens, 3, 3, false)) {
             std::cout << "Usage: insert UUID sync time1,value1 [time2,value2] ..."
                       << std::endl;
             return;
@@ -420,7 +429,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -431,13 +440,13 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::uint64_t version_resp = 0;
-        btrdb::Status status = s->insert(btrdb::default_ctx, &version_resp, data.begin(), data.end(), sync);
+        btrdb::Status status = s->insert(cmd_ctx, &version_resp, data.begin(), data.end(), sync);
         std::cout << status.message() << std::endl;
         if (!status.isError()) {
             std::cout << "Version: " << version_resp << std::endl;
         }
     } else if (opcode == "delete") {
-        if (check_arguments(tokens, 3)) {
+        if (check_arguments(tokens, 1, 3)) {
             std::cout << "Usage: delete UUID [start] [end]" << std::endl;
             return;
         }
@@ -463,7 +472,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -474,13 +483,13 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::uint64_t version_resp = 0;
-        btrdb::Status status = s->deleteRange(btrdb::default_ctx, &version_resp, start, end);
+        btrdb::Status status = s->deleteRange(cmd_ctx, &version_resp, start, end);
         std::cout << status.message() << std::endl;
         if (!status.isError()) {
             std::cout << "Version: " << version_resp << std::endl;
         }
     } else if (opcode == "obliterate") {
-        if (check_arguments(tokens, 1)) {
+        if (check_arguments(tokens, 1, 1)) {
             std::cout << "Usage: obliterate UUID" << std::endl;
             return;
         }
@@ -494,7 +503,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -504,10 +513,10 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             return;
         }
 
-        btrdb::Status status = s->obliterate(btrdb::default_ctx);
+        btrdb::Status status = s->obliterate(cmd_ctx);
         std::cout << status.message() << std::endl;
     } else if (opcode == "raw") {
-        if (check_arguments(tokens, 4)) {
+        if (check_arguments(tokens, 1, 4)) {
             std::cout << "Usage: raw UUID [start] [end] [version]" << std::endl;
             return;
         }
@@ -539,7 +548,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -550,7 +559,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::uint64_t version_resp = 0;
-        btrdb::Status status = s->rawValues(btrdb::default_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::RawPoint>& data, std::uint64_t version)
+        btrdb::Status status = s->rawValues(cmd_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::RawPoint>& data, std::uint64_t version)
         {
             (void) finished;
             (void) status;
@@ -565,7 +574,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << status.message() << std::endl;
         }
     } else if (opcode == "aligned") {
-        if (check_arguments(tokens, 5)) {
+        if (check_arguments(tokens, 1, 5)) {
             std::cout << "Usage: aligned UUID [pwe] [start] [end] [version]"
                       << std::endl;
             return;
@@ -605,7 +614,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -616,7 +625,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         }
 
         std::uint64_t version_resp;
-        btrdb::Status status = s->alignedWindows(btrdb::default_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::StatisticalPoint> data, std::uint64_t version) {
+        btrdb::Status status = s->alignedWindows(cmd_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::StatisticalPoint> data, std::uint64_t version) {
             (void) finished;
             (void) status;
             version_resp = version;
@@ -631,7 +640,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << status.message() << std::endl;
         }
     } else if (opcode == "windows") {
-        if (check_arguments(tokens, 6)) {
+        if (check_arguments(tokens, 1, 6)) {
             std::cout << "Usage: windows UUID [width] [start] [end] [depth] "
                       << "[version]" << std::endl;
             return;
@@ -677,7 +686,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -689,7 +698,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
 
         std::vector<struct btrdb::StatisticalPoint> data;
         std::uint64_t version_resp;
-        btrdb::Status status = s->windows(btrdb::default_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::StatisticalPoint> data, std::uint64_t version) {
+        btrdb::Status status = s->windows(cmd_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::StatisticalPoint> data, std::uint64_t version) {
             (void) finished;
             (void) status;
             version_resp = version;
@@ -704,7 +713,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << status.message() << std::endl;
         }
     } else if (opcode == "changes") {
-        if (check_arguments(tokens, 4)) {
+        if (check_arguments(tokens, 1, 4)) {
             std::cout << "Usage: changes UUID from_version [to_version] "
                       << "[depth]" << std::endl;
             return;
@@ -738,7 +747,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -750,7 +759,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
 
         std::vector<struct btrdb::StatisticalPoint> data;
         std::uint64_t version_resp;
-        btrdb::Status status = s->changes(btrdb::default_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::ChangedRange> data, std::uint64_t version) {
+        btrdb::Status status = s->changes(cmd_ctx, [&version_resp](bool finished, btrdb::Status status, const std::vector<struct btrdb::ChangedRange> data, std::uint64_t version) {
             (void) finished;
             (void) status;
             version_resp = version;
@@ -764,7 +773,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
             std::cout << status.message() << std::endl;
         }
     } else if (opcode == "nearest") {
-        if (check_arguments(tokens, 4)) {
+        if (check_arguments(tokens, 1, 4)) {
             std::cout << "Usage: nearest UUID [backward] [timestamp] [version]"
                       << std::endl;
             return;
@@ -797,7 +806,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
         std::unique_ptr<btrdb::Stream> s = b->streamFromUUID(uuid);
 
         bool exists;
-        btrdb::Status stat = s->exists(btrdb::default_ctx, &exists);
+        btrdb::Status stat = s->exists(cmd_ctx, &exists);
         if (stat.isError()) {
             std::cout << stat.message() << std::endl;
             return;
@@ -809,7 +818,7 @@ void evaluate(std::shared_ptr<btrdb::BTrDB> b, const std::string& command) {
 
         struct btrdb::RawPoint pt;
         std::uint64_t version_resp;
-        btrdb::Status status = s->nearest(btrdb::default_ctx, &pt, &version_resp, timestamp, backward, version);
+        btrdb::Status status = s->nearest(cmd_ctx, &pt, &version_resp, timestamp, backward, version);
         std::cout << pt.time << "," << pt.value << std::endl;
         std::cout << "Version: " << version_resp << std::endl;
         if (status.isError()) {
@@ -839,7 +848,7 @@ int main(int argc, char** argv) {
         std::cout << "Usage: " << argv[0] << " address:port" << std::endl;
         return 1;
     }
-    std::shared_ptr<btrdb::BTrDB> b = btrdb::BTrDB::connect(btrdb::default_ctx, { argv[1] });
+    std::shared_ptr<btrdb::BTrDB> b = btrdb::BTrDB::connect(cmd_ctx, { argv[1] });
     if (b.get() == nullptr) {
         std::cout << "Error: could not connect" << std::endl;
         return 2;

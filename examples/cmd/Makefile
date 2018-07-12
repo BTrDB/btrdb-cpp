@@ -10,4 +10,4 @@ main.o: main.cpp
 	g++ -std=c++11 -pthread -ggdb3 -c main.cpp -o main.o
 
 clean:
-	rm -f btrdb-cmd btrdb-cmd-static
+	rm -f *.o btrdb-cmd btrdb-cmd-static

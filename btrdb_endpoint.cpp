@@ -37,13 +37,13 @@ namespace btrdb {
         params.set_uuid(uuid, 16);
         params.set_sync(sync);
 
-        auto& values = *params.mutable_values();
-        values.Reserve(data_end - data_start);
+        auto values = params.mutable_values();
+        values->Reserve(data_end - data_start);
 
         for (auto i = data_start; i != data_end; i++) {
-            grpcinterface::RawPoint value;
-            value.set_time(i->time);
-            value.set_value(i->value);
+            grpcinterface::RawPoint* value = values->Add();
+            value->set_time(i->time);
+            value->set_value(i->value);
         }
 
         grpc::ClientContext context;
